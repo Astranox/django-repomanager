@@ -16,15 +16,19 @@ from django.utils.translation import ugettext as _
 
 from .constants import VENDOR_DEBIAN
 from .constants import VENDOR_UBUNTU
+from .constants import VENDOR_FEDORA
+from .constants import VENDOR_REDHAT
 
 VENDORS = (
     (VENDOR_DEBIAN, 'Debian'),
     (VENDOR_UBUNTU, 'Ubuntu'),
+    (VENDOR_FEDORA, 'Fedora'),
+    (VENDOR_REDHAT, 'RedHat'),
 )
 
 
 class Component(models.Model):
-    name = models.CharField(max_length=16, unique=True)
+    name = models.CharField(max_length=64, unique=True)
     enabled = models.BooleanField(default=True)
     last_seen = models.DateTimeField(null=True)
 
@@ -33,7 +37,7 @@ class Component(models.Model):
 
 
 class Distribution(models.Model):
-    name = models.CharField(max_length=16, unique=True)
+    name = models.CharField(max_length=64, unique=True)
     vendor = models.SmallIntegerField(choices=VENDORS)
     last_seen = models.DateTimeField(null=True)
     released = models.DateField(null=True, blank=True)
@@ -51,6 +55,10 @@ class Package(models.Model):
     all_components = models.BooleanField(
         default=False,
         help_text=_('If set, the package will be automatically added to all known components.')
+    )
+    all_distributions = models.BooleanField(
+        default=False,
+        help_text=_('If set, the package will be automatically added to all known distributions with same vendor.')
     )
 
     components = models.ManyToManyField(Component, blank=True)

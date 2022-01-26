@@ -121,6 +121,9 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 
+APT_BASEDIR = '/srv/repo/www/apt'
+RPM_BASEDIR = '/srv/repo/www/rpm'
+
 try:
     from .localsettings import *  # NOQA
 except ImportError:

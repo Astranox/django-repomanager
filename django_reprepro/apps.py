@@ -17,4 +17,4 @@ from django.utils.translation import ugettext_lazy as _
 
 class DjangoRepreproConfig(AppConfig):
     name = 'django_reprepro'
-    verbose_name = _('APT repositories')
+    verbose_name = _('Package repositories')

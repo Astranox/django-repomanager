@@ -11,6 +11,7 @@
 # You should have received a copy of the GNU General Public License along with django-reprepro.  If
 # not, see <http://www.gnu.org/licenses/>.
 
+import glob
 import os
 import re
 import time
@@ -27,6 +28,7 @@ from ...models import IncomingDirectory
 from ...models import Package
 from ...models import SourcePackage
 from ...util import ChangesFile
+from ...constants import VENDOR_DEBIAN, VENDOR_UBUNTU, VENDOR_FEDORA, VENDOR_REDHAT
 
 # NOTE 2016-01-15: We add --ignore=surprisingbinary because of automatically generated
 #   -dbgsym packages, which are not included in the changes file. See
@@ -34,9 +36,8 @@ from ...util import ChangesFile
 #   in reprepro 4.17.0.
 # NOTE 2018-01-14: Add --ignore=wrongdistribution because packages now always name "unstable"
 #   in the changelog.
-BASE_ARGS = ['reprepro', '-b', '/var/www/apt.fsinf.at/', '--ignore=surprisingbinary',
+BASE_ARGS = ['reprepro', '-b', settings.APT_BASEDIR, '--ignore=surprisingbinary',
              '--ignore=wrongdistribution']
-
 
 class Command(BaseCommand):
     help = 'Process incoming files'
@@ -46,7 +47,7 @@ class Command(BaseCommand):
                             help="Don't really add any files.")
         parser.add_argument(
             '--prerm', default='',
-            help="Coma-seperated list of source packages to remove before "
+            help="Comma-seperated list of source packages to remove before "
                  "adding them. Necessary for source packages that build"
                  "several binary packages with new versions."
         )
@@ -193,6 +194,75 @@ class Command(BaseCommand):
 
             self.rm(changesfile)
 
+    def handle_rpm_file(self, rpmfile, package, dist, pkgmatch):
+        name = pkgmatch.group('name')
+        version = pkgmatch.group('version')
+        release = pkgmatch.group('release')
+        arch = pkgmatch.group('arch')
+
+        # check signature
+        command = ["rpm", "--quiet", "--checksig", rpmfile]
+        code, stdout, stderr = self.ex(*command)
+
+        if code != 0:
+            self.err('Signature for {} is invalid'.format(rpmfile))
+            return None
+
+        # copy to proper location
+        target = f"{name}-{version}-{release}.{dist.name}.{arch}.rpm"
+        command = ["cp", "-a", rpmfile, f"{settings.RPM_BASEDIR}/rpms/{target}"]
+        code, stdout, stderr = self.ex(*command)
+        if code != 0:
+            self.err(f"Couldn't copy file {rpmfile} to {settings.RPM_BASEDIR}/rpms/.")
+            self.err(f"command: {command}")
+            self.err(f"target: {target}")
+            return None
+
+        # remove rpm file:
+        self.rm(rpmfile)
+
+        return target
+
+    def handle_rpm_distribution(self, rpmfile, package, dist, pkgmatch, target):
+        dir = pkgmatch.group('dir')
+        name = pkgmatch.group('name')
+        version = pkgmatch.group('version')
+        release = pkgmatch.group('release')
+        arch = pkgmatch.group('arch')
+
+        # get list of components
+        if arch == "noarch":
+            components = dist.components.filter(enabled=True)
+        else:
+            components = dist.components.filter(enabled=True, name__endswith=f"-{arch}")
+        if not package.all_components:
+            specific_components = package.components.order_by('name').filter(distribution=dist, name__endswith=f"-{arch}")
+            if len(specific_components) > 0:
+                specific_components.update(last_seen=timezone.now())
+                components = specific_components
+        if self.verbose:
+            print('%s: %s' % (dist, ', '.join([c.name for c in components])))
+
+        if arch == "src":
+            p, created = SourcePackage.objects.get_or_create(package=package, dist=dist, version=f"{version}-{release}")
+        else:
+            p, created = BinaryPackage.objects.get_or_create(package=package, name=name, dist=dist, arch=arch, version=f"{version}-{release}")
+        if not created:
+            p.components.clear()
+            p.timestamp = timezone.now()
+            p.save()
+
+        p.components.add(*components)
+
+        for component in components:
+            if self.verbose:
+                print(target)
+            linkpath = f"{settings.RPM_BASEDIR}/{component.name}/{name}-{version}-{release}.{dist.name}.{arch}.rpm"
+            if self.verbose:
+                print(linkpath)
+            os.symlink(f"{settings.RPM_BASEDIR}/rpms/{target}", linkpath)
+
+
     def handle_directory(self, path):
         dist, arch = os.path.basename(path).split('-', 1)
         dist = Distribution.objects.get(name=dist)
@@ -217,18 +287,118 @@ class Command(BaseCommand):
 
         location = os.path.abspath(incoming.location)
 
+        deb_paths = []
+        rpm_paths = []
         for dirname in sorted(os.listdir(location)):
             path = os.path.join(location, dirname)
-            if not os.path.isdir(path) or '-' not in path:
-                continue
+            if os.path.isdir(path) and '-' in path:
+                deb_paths.append(path)
+            elif os.path.isfile(path) and path.endswith(".rpm"):
+                rpm_paths.append(path)
+
+        # handle debian stuff
+        for path in deb_paths:
             self.handle_directory(path)
+
+        # handle rpm stuff
+        if len(rpm_paths) > 0:
+            # ensure paths
+            dists = Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT])
+            for dist in dists:
+                for component in dist.components.all():
+                    command = ["mkdir", "-p", f"{settings.RPM_BASEDIR}/{component.name}"]
+                    self.ex(*command)
+            command = ["mkdir", "-p", f"{settings.RPM_BASEDIR}/rpms/"]
+            self.ex(*command)
+
+        for path in rpm_paths:
+            try:
+                # parse name, version and arch from the filename
+                pkgmatch = re.match('^(?P<dir>.*)/(?P<name>[^/]*)-(?P<version>[^-/]*)-(?P<release>[^-/]*)\.(?P<dist>[^./]*)\.(?P<arch>[^/]*)\.rpm$', path)
+                dir = pkgmatch.group('dir')
+                name = pkgmatch.group('name')
+                version = pkgmatch.group('version')
+                release = pkgmatch.group('release')
+                dist = pkgmatch.group('dist')
+                arch = pkgmatch.group('arch')
+
+                dist = Distribution.objects.get(name=dist)
+
+                # find package name from file name
+                package = None
+                if arch == "src":
+                    pkgs = SourcePackage.objects.filter(package__name=name)
+                    pkgs_dist = pkgs.filter(dist=dist)
+                    if len(pkgs_dist) > 0:
+                        package = pkgs_dist[0].package
+                    elif len(pkgs) > 0:
+                        package = pkgs[0].package
+                else:
+                    pkgs = BinaryPackage.objects.filter(name=name)
+                    pkgs_dist = pkgs.filter(dist=dist)
+                    pkgs_arch = pkgs_dist.filter(arch=arch)
+                    if len(pkgs_arch) > 0:
+                        package = pkgs_arch[0].package
+                    elif len(pkgs_dist) > 0:
+                        package = pkgs_dist[0].package
+                    elif len(pkgs) > 0:
+                        package = pkgs[0].package
+
+                if package is None:
+                    package = Package.objects.get_or_create(name=name)[0]
+
+                package.last_seen = timezone.now()
+                package.save()
+
+                # remove package if requested
+                if package.name in self.prerm or package.remove_on_update:
+                    storagefiles = glob.glob(f"{settings.RPM_BASEDIR}/rpms/{name}-*-*.*.*.rpm")
+                    for file in storagefiles:
+                        self.rm(file)
+                    for srcpkg in SourcePackage.objects.filter(package__name=package.name, dist__vendor__in=[VENDOR_FEDORA, VENDOR_REDHAT]):
+                        for component in srcpkg.components.all():
+                            fn = f"{settings.RPM_BASEDIR}/{component.name}/{srcpkg.name}-{srcpkg.version}.{srcpkg.dist.name}.src.rpm"
+                            if os.path.exists(fn):
+                                self.rm(fn)
+                        if not self.dry:
+                            srcpkg.delete()
+                    for binpkg in BinaryPackage.objects.filter(package__name=package.name, dist__vendor__in=[VENDOR_FEDORA, VENDOR_REDHAT]):
+                        for component in binpkg.components.all():
+                            fn = f"{settings.RPM_BASEDIR}/{component.name}/{binpkg.name}-{binpkg.version}.{binpkg.dist.name}.{binpkg.arch}.rpm"
+                            if os.path.exists(fn):
+                                self.rm(fn)
+                        if not self.dry:
+                            binpkg.delete()
+
+                target = self.handle_rpm_file(path, package, dist, pkgmatch)
+                if target is None:
+                    self.err("Couldn't create link target rpm file.")
+                    continue
+
+                dists = [dist]
+                if package.all_distributions:
+                    dists = Distribution.objects.filter(vendor=dist.vendor)
+
+                for d in dists:
+                    d.last_seen = timezone.now()
+                    d.save()
+                    self.handle_rpm_distribution(path, package, d, pkgmatch, target)
+
+            except RuntimeError as e:
+                self.err(e)
+
+        if len(rpm_paths) > 0:
+            # regenerate / update all components
+            dists = Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT])
+            for dist in dists:
+                for component in dist.components.all():
+                    command = ["createrepo", "-d", "--basedir", f"{settings.RPM_BASEDIR}/{component.name}", "--update", "."]
+                    self.ex(*command)
 
     def handle(self, *args, **options):
         self.verbose = options['verbosity'] >= 2
         self.dry = options['dry_run']
         self.norm = options['norm']
-        self.basedir = os.path.abspath(
-            options.get('basedir', getattr(settings, 'APT_BASEDIR', '.')))
         self.prerm = options['prerm'].split(',')
         self.src_handled = {}
 
