@@ -195,10 +195,10 @@ class Command(BaseCommand):
             self.rm(changesfile)
 
     def handle_rpm_file(self, rpmfile, package, dist, pkgmatch):
-        name = pkgmatch.group('name')
-        version = pkgmatch.group('version')
-        release = pkgmatch.group('release')
-        arch = pkgmatch.group('arch')
+        name = pkgmatch['name']
+        version = pkgmatch['version']
+        release = pkgmatch['release']
+        arch = pkgmatch['arch']
 
         # check signature
         command = ["rpm", "--quiet", "--checksig", rpmfile]
@@ -224,11 +224,10 @@ class Command(BaseCommand):
         return target
 
     def handle_rpm_distribution(self, rpmfile, package, dist, pkgmatch, target):
-        dir = pkgmatch.group('dir')
-        name = pkgmatch.group('name')
-        version = pkgmatch.group('version')
-        release = pkgmatch.group('release')
-        arch = pkgmatch.group('arch')
+        name = pkgmatch['name']
+        version = pkgmatch['version']
+        release = pkgmatch['release']
+        arch = pkgmatch['arch']
 
         # get list of components
         if arch == "noarch":
@@ -236,7 +235,7 @@ class Command(BaseCommand):
         else:
             components = dist.components.filter(enabled=True, name__endswith=f"-{arch}")
         if not package.all_components:
-            specific_components = package.components.order_by('name').filter(distribution=dist, name__endswith=f"-{arch}")
+            specific_components = package.components.order_by('name')
             if len(specific_components) > 0:
                 specific_components.update(last_seen=timezone.now())
                 components = specific_components
@@ -293,8 +292,11 @@ class Command(BaseCommand):
             path = os.path.join(location, dirname)
             if os.path.isdir(path) and '-' in path:
                 deb_paths.append(path)
-            elif os.path.isfile(path) and path.endswith(".rpm"):
-                rpm_paths.append(path)
+            elif os.path.isdir(path):
+                for subdirfile in sorted(os.listdir(path)):
+                    subdirpath = os.path.join(path, subdirfile)
+                    if os.path.isfile(subdirpath) and subdirpath.endswith(".rpm"):
+                        rpm_paths.append((dirname, subdirpath))
 
         # handle debian stuff
         for path in deb_paths:
@@ -311,32 +313,46 @@ class Command(BaseCommand):
             command = ["mkdir", "-p", f"{settings.RPM_BASEDIR}/rpms/"]
             self.ex(*command)
 
-        for path in rpm_paths:
+        for listdir, path in rpm_paths:
             try:
-                # parse name, version and arch from the filename
-                pkgmatch = re.match('^(?P<dir>.*)/(?P<name>[^/]*)-(?P<version>[^-/]*)-(?P<release>[^-/]*)\.(?P<dist>[^./]*)\.(?P<arch>[^/]*)\.rpm$', path)
-                dir = pkgmatch.group('dir')
-                name = pkgmatch.group('name')
-                version = pkgmatch.group('version')
-                release = pkgmatch.group('release')
-                dist = pkgmatch.group('dist')
-                arch = pkgmatch.group('arch')
+                # try to get package infos via rpm
+                pkgmatch = {
+                        'dist': listdir,
+                        'arch': 'x86_64',
+                        }
 
-                dist = Distribution.objects.get(name=dist)
+                command = ["rpm", "-qpi", path]
+                code, out, err = self.ex(*command)
+                lines = out.decode('utf-8').split('\n')
+                for line in lines:
+                    if line.startswith('Description'):
+                        break
+                    line_re = re.match('^(?P<key>[a-zA-Z ]*[a-zA-Z])[ ]*: (?P<value>.*)$', line)
+                    if line_re is None:
+                        print("Can't parse line: {}".format(line))
+                        continue
+                    k = line_re.group('key').lower()
+                    v = line_re.group('value')
+                    if k in ['name', 'version', 'release']:
+                        pkgmatch[k] = v
+                    if k == 'architecture':
+                        pkgmatch['arch'] = v
+
+                dist = Distribution.objects.get(name=pkgmatch['dist'])
 
                 # find package name from file name
                 package = None
-                if arch == "src":
-                    pkgs = SourcePackage.objects.filter(package__name=name)
+                if pkgmatch['arch'] == "src":
+                    pkgs = SourcePackage.objects.filter(package__name=pkgmatch['name'])
                     pkgs_dist = pkgs.filter(dist=dist)
                     if len(pkgs_dist) > 0:
                         package = pkgs_dist[0].package
                     elif len(pkgs) > 0:
                         package = pkgs[0].package
                 else:
-                    pkgs = BinaryPackage.objects.filter(name=name)
+                    pkgs = BinaryPackage.objects.filter(name=pkgmatch['name'])
                     pkgs_dist = pkgs.filter(dist=dist)
-                    pkgs_arch = pkgs_dist.filter(arch=arch)
+                    pkgs_arch = pkgs_dist.filter(arch=pkgmatch['arch'])
                     if len(pkgs_arch) > 0:
                         package = pkgs_arch[0].package
                     elif len(pkgs_dist) > 0:
@@ -345,27 +361,28 @@ class Command(BaseCommand):
                         package = pkgs[0].package
 
                 if package is None:
-                    package = Package.objects.get_or_create(name=name)[0]
+                    package = Package.objects.get_or_create(name=pkgmatch['name'])[0]
 
                 package.last_seen = timezone.now()
                 package.save()
 
                 # remove package if requested
                 if package.name in self.prerm or package.remove_on_update:
+                    name = pkgmatch['name']
                     storagefiles = glob.glob(f"{settings.RPM_BASEDIR}/rpms/{name}-*-*.*.*.rpm")
                     for file in storagefiles:
                         self.rm(file)
                     for srcpkg in SourcePackage.objects.filter(package__name=package.name, dist__vendor__in=[VENDOR_FEDORA, VENDOR_REDHAT]):
                         for component in srcpkg.components.all():
                             fn = f"{settings.RPM_BASEDIR}/{component.name}/{srcpkg.name}-{srcpkg.version}.{srcpkg.dist.name}.src.rpm"
-                            if os.path.exists(fn):
+                            if os.path.exists(fn) or os.path.islink(fn):
                                 self.rm(fn)
                         if not self.dry:
                             srcpkg.delete()
                     for binpkg in BinaryPackage.objects.filter(package__name=package.name, dist__vendor__in=[VENDOR_FEDORA, VENDOR_REDHAT]):
                         for component in binpkg.components.all():
                             fn = f"{settings.RPM_BASEDIR}/{component.name}/{binpkg.name}-{binpkg.version}.{binpkg.dist.name}.{binpkg.arch}.rpm"
-                            if os.path.exists(fn):
+                            if os.path.exists(fn) or os.path.islink(fn):
                                 self.rm(fn)
                         if not self.dry:
                             binpkg.delete()
@@ -389,11 +406,15 @@ class Command(BaseCommand):
 
         if len(rpm_paths) > 0:
             # regenerate / update all components
+            components_to_regenerate = []
             dists = Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT])
             for dist in dists:
                 for component in dist.components.all():
-                    command = ["createrepo", "-d", "--basedir", f"{settings.RPM_BASEDIR}/{component.name}", "--update", "."]
-                    self.ex(*command)
+                    if component not in components_to_regenerate:
+                        components_to_regenerate.append(component)
+            for component in components_to_regenerate:
+                command = ["createrepo", "-d", "--basedir", f"{settings.RPM_BASEDIR}/{component.name}", "--update", "."]
+                self.ex(*command)
 
     def handle(self, *args, **options):
         self.verbose = options['verbosity'] >= 2
