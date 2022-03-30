@@ -28,7 +28,7 @@ from ...models import IncomingDirectory
 from ...models import Package
 from ...models import SourcePackage
 from ...util import ChangesFile
-from ...constants import VENDOR_DEBIAN, VENDOR_UBUNTU, VENDOR_FEDORA, VENDOR_REDHAT
+from ...constants import VENDOR_FEDORA, VENDOR_REDHAT
 
 # NOTE 2016-01-15: We add --ignore=surprisingbinary because of automatically generated
 #   -dbgsym packages, which are not included in the changes file. See
@@ -68,11 +68,10 @@ class Command(BaseCommand):
         if self.verbose:
             print(' '.join(args))
         if not self.dry:
-            p = Popen(args, stdout=PIPE, stderr=PIPE)
-            stdout, stderr = p.communicate()
-            return p.returncode, stdout, stderr
-        else:
-            return 0, '', ''
+            process = Popen(args, stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
+            return process.returncode, stdout, stderr
+        return 0, '', ''
 
     def remove_src_package(self, pkg, dist):
         """Remove a source package from a distribution."""
@@ -93,17 +92,17 @@ class Command(BaseCommand):
 
     def record_source_upload(self, package, changes, dist, components):
         version = changes['Version'].rsplit('-', 1)[0]
-        p, created = SourcePackage.objects.get_or_create(package=package, dist=dist, defaults={
+        pkg, created = SourcePackage.objects.get_or_create(package=package, dist=dist, defaults={
             'version': version,
         })
         if not created:
-            p.version = version
-            p.components.clear()
-            p.timestamp = timezone.now()
-            p.save()
+            pkg.version = version
+            pkg.components.clear()
+            pkg.timestamp = timezone.now()
+            pkg.save()
 
-        p.components.add(*components)
-        return p
+        pkg.components.add(*components)
+        return pkg
 
     def record_binary_upload(self, deb, package, dist, components):
         # parse name, version and arch from the filename
@@ -112,18 +111,18 @@ class Command(BaseCommand):
         version = match.group('version')
         arch = match.group('arch')
 
-        p, created = BinaryPackage.objects.get_or_create(
+        pkg, created = BinaryPackage.objects.get_or_create(
             package=package, name=name, dist=dist, arch=arch, defaults={
                 'version': version,
             })
         if not created:
-            p.version = version
-            p.components.clear()
-            p.timestamp = timezone.now()
-            p.save()
+            pkg.version = version
+            pkg.components.clear()
+            pkg.timestamp = timezone.now()
+            pkg.save()
 
-        p.components.add(*components)
-        return p
+        pkg.components.add(*components)
+        return pkg
 
     def handle_changesfile(self, changesfile, dist, arch):
         pkg = ChangesFile(changesfile)
@@ -243,15 +242,15 @@ class Command(BaseCommand):
             print('%s: %s' % (dist, ', '.join([c.name for c in components])))
 
         if arch == "src":
-            p, created = SourcePackage.objects.get_or_create(package=package, dist=dist, version=f"{version}-{release}")
+            pkg, created = SourcePackage.objects.get_or_create(package=package, dist=dist, version=f"{version}-{release}")
         else:
-            p, created = BinaryPackage.objects.get_or_create(package=package, name=name, dist=dist, arch=arch, version=f"{version}-{release}")
+            pkg, created = BinaryPackage.objects.get_or_create(package=package, name=name, dist=dist, arch=arch, version=f"{version}-{release}")
         if not created:
-            p.components.clear()
-            p.timestamp = timezone.now()
-            p.save()
+            pkg.components.clear()
+            pkg.timestamp = timezone.now()
+            pkg.save()
 
-        p.components.add(*components)
+        pkg.components.add(*components)
 
         for component in components:
             if self.verbose:
@@ -415,6 +414,10 @@ class Command(BaseCommand):
             for component in components_to_regenerate:
                 command = ["createrepo", "-d", "--basedir", f"{settings.RPM_BASEDIR}/{component.name}", "--update", "."]
                 self.ex(*command)
+
+            # fix selinux contexts
+            command = ["restorecon", "-Rv", settings.RPM_BASEDIR]
+            self.ex(*command)
 
     def handle(self, *args, **options):
         self.verbose = options['verbosity'] >= 2
