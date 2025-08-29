@@ -12,7 +12,6 @@ https://docs.djangoproject.com/en/1.9/ref/settings/
 
 import os
 from pathlib import Path
-from distutils.util import strtobool
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -132,6 +131,8 @@ MEDIA_URL = '/media/'
 
 APT_BASEDIR = '/srv/repo/www/apt'
 RPM_BASEDIR = '/srv/repo/www/rpm'
+
+SELINUX = False
 
 try:
     from .localsettings import *  # NOQA

@@ -8,5 +8,7 @@ services:
     environment: &env
       - CSRF_TRUSTED_ORIGINS=https://localhost
     restart: 'no'
+    ports:
+      - "8000:8000"
     volumes:
       - ./:/usr/src/app/:z

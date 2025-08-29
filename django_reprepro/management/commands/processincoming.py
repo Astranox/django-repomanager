@@ -39,6 +39,7 @@ from ...constants import VENDOR_FEDORA, VENDOR_REDHAT
 BASE_ARGS = ['reprepro', '-b', settings.APT_BASEDIR, '--ignore=surprisingbinary',
              '--ignore=wrongdistribution']
 
+
 class Command(BaseCommand):
     help = 'Process incoming files'
 
@@ -193,6 +194,105 @@ class Command(BaseCommand):
 
             self.rm(changesfile)
 
+    def handle_rpm_directory(self, path, dist):
+        rpm_file_paths = []
+
+        for subdirfile in sorted(os.listdir(path)):
+            subdirpath = os.path.join(path, subdirfile)
+            if os.path.isfile(subdirpath) and subdirpath.endswith(".rpm"):
+                rpm_file_paths.append(subdirpath)
+
+        for listdir__this_is_first_param_now, filepath in rpm_paths:
+            try:
+                # try to get package infos via rpm
+                pkgmatch = {
+                    'dist': dist,
+                    'arch': 'x86_64',
+                }
+
+                command = ["rpm", "-qpi", filepath]
+                code, out, err = self.ex(*command)
+                lines = out.decode('utf-8').split('\n')
+                for line in lines:
+                    if line.startswith('Description'):
+                        break
+                    line_re = re.match('^(?P<key>[a-zA-Z ]*[a-zA-Z])[ ]*: (?P<value>.*)$', line)
+                    if line_re is None:
+                        print("Can't parse line: {}".format(line))
+                        continue
+                    k = line_re.group('key').lower()
+                    v = line_re.group('value')
+                    if k in ['name', 'version', 'release']:
+                        pkgmatch[k] = v
+                    if k == 'architecture':
+                        pkgmatch['arch'] = v
+
+                dist = Distribution.objects.get(name=pkgmatch['dist'])
+
+                # find package name from file name
+                package = None
+                if pkgmatch['arch'] == "src":
+                    pkgs = SourcePackage.objects.filter(package__name=pkgmatch['name'])
+                    pkgs_dist = pkgs.filter(dist=dist)
+                    if len(pkgs_dist) > 0:
+                        package = pkgs_dist[0].package
+                    elif len(pkgs) > 0:
+                        package = pkgs[0].package
+                else:
+                    pkgs = BinaryPackage.objects.filter(name=pkgmatch['name'])
+                    pkgs_dist = pkgs.filter(dist=dist)
+                    pkgs_arch = pkgs_dist.filter(arch=pkgmatch['arch'])
+                    if len(pkgs_arch) > 0:
+                        package = pkgs_arch[0].package
+                    elif len(pkgs_dist) > 0:
+                        package = pkgs_dist[0].package
+                    elif len(pkgs) > 0:
+                        package = pkgs[0].package
+
+                if package is None:
+                    package = Package.objects.get_or_create(name=pkgmatch['name'])[0]
+
+                package.last_seen = timezone.now()
+                package.save()
+
+                # remove package if requested
+                if package.name in self.prerm or package.remove_on_update:
+                    name = pkgmatch['name']
+                    storagefiles = glob.glob(f"{settings.RPM_BASEDIR}/rpms/{name}-*-*.*.*.rpm")
+                    for file in storagefiles:
+                        self.rm(file)
+                    for srcpkg in SourcePackage.objects.filter(package__name=package.name, dist__vendor__in=[VENDOR_FEDORA, VENDOR_REDHAT]):
+                        for component in srcpkg.components.all():
+                            fn = f"{settings.RPM_BASEDIR}/{component.name}/{srcpkg.name}-{srcpkg.version}.{srcpkg.dist.name}.src.rpm"
+                            if os.path.exists(fn) or os.path.islink(fn):
+                                self.rm(fn)
+                        if not self.dry:
+                            srcpkg.delete()
+                    for binpkg in BinaryPackage.objects.filter(package__name=package.name, dist__vendor__in=[VENDOR_FEDORA, VENDOR_REDHAT]):
+                        for component in binpkg.components.all():
+                            fn = f"{settings.RPM_BASEDIR}/{component.name}/{binpkg.name}-{binpkg.version}.{binpkg.dist.name}.{binpkg.arch}.rpm"
+                            if os.path.exists(fn) or os.path.islink(fn):
+                                self.rm(fn)
+                        if not self.dry:
+                            binpkg.delete()
+
+                target = self.handle_rpm_file(filepath, package, dist, pkgmatch)
+                if target is None:
+                    self.err("Couldn't create link target rpm file.")
+                    continue
+
+                dists = [dist]
+                if package.all_distributions:
+                    dists = Distribution.objects.filter(vendor=dist.vendor)
+
+                for d in dists:
+                    d.last_seen = timezone.now()
+                    d.save()
+                    self.handle_rpm_distribution(filepath, package, d, pkgmatch, target)
+
+            except RuntimeError as e:
+                self.err(e)
+
     def handle_rpm_file(self, rpmfile, package, dist, pkgmatch):
         name = pkgmatch['name']
         version = pkgmatch['version']
@@ -260,15 +360,31 @@ class Command(BaseCommand):
                 print(linkpath)
             os.symlink(f"{settings.RPM_BASEDIR}/rpms/{target}", linkpath)
 
-
-    def handle_directory(self, path):
+    def handle_deb_directory(self, path, dist):
         dist, arch = os.path.basename(path).split('-', 1)
         dist = Distribution.objects.get(name=dist)
 
+        seen_packages = []
+
         for f in [f for f in os.listdir(path) if f.endswith('.changes')]:
+            pkgname, _, _ = f.rpartition('_', 1)
+            seen_packages.append(pkgname)
             dist.last_seen = timezone.now()
             try:
                 self.handle_changesfile(os.path.join(path, f), dist, arch)
+            except RuntimeError as e:
+                self.err(e)
+
+        # check for leftover deb files without metadata files
+        for f in [f for f in os.listdir(path) if f.endswith('.deb')]:
+            pkgname, _, _ = f.rpartition('_', 1)
+            # this file has a changes file
+            if pkgname in seen_packages:
+                continue
+
+            dist.last_seen = timezone.now()
+            try:
+                self.handle_debfile(os.path.join(path, f), dist, arch)
             except RuntimeError as e:
                 self.err(e)
 
@@ -285,125 +401,51 @@ class Command(BaseCommand):
 
         location = os.path.abspath(incoming.location)
 
-        deb_paths = []
-        rpm_paths = []
+        dists = Distribution.objects.all()
+        dist_names = {}
+
+        for dist in dists:
+            dist_names[dist.name] = dist
+
         for dirname in sorted(os.listdir(location)):
             path = os.path.join(location, dirname)
-            if os.path.isdir(path) and '-' in path:
-                deb_paths.append(path)
-            elif os.path.isdir(path):
-                for subdirfile in sorted(os.listdir(path)):
-                    subdirpath = os.path.join(path, subdirfile)
-                    if os.path.isfile(subdirpath) and subdirpath.endswith(".rpm"):
-                        rpm_paths.append((dirname, subdirpath))
+            dist = dirname
+            if '-' in dirname:
+                dist, _, _ = dirname.rpartition('-')
 
-        # handle debian stuff
-        for path in deb_paths:
-            self.handle_directory(path)
+            // check if it is a valid distribution
+            if os.path.isdir(path) and dist in dist_names:
+                vendor = dist_names[dist].vendor
+                if vendor in [VENDOR_DEBIAN,VENDOR_UBUNTU]:
+                    self.handle_deb_directory(path, dirname)
+                elif vendor in [VENDOR_FEDORA,VENDOR_REDHAT]:
+                    self.handle_rpm_directory(path, dist)
+                else:
+                    self.err(f"Unknown distro path: {path}")
 
-        # handle rpm stuff
-        if len(rpm_paths) > 0:
-            # ensure paths
+    def handle(self, *args, **options):
+        self.verbose = options['verbosity'] >= 2
+        self.dry = options['dry_run']
+        self.norm = options['norm']
+        self.prerm = options['prerm'].split(',')
+        self.src_handled = {}
+
+        # ensure paths
+        if settings.RPM_BASEDIR is not None:
             dists = Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT])
             for dist in dists:
                 for component in dist.components.all():
                     command = ["mkdir", "-p", f"{settings.RPM_BASEDIR}/{component.name}"]
                     self.ex(*command)
-            command = ["mkdir", "-p", f"{settings.RPM_BASEDIR}/rpms/"]
+            command = ["mkdir", "-p", f"{settings.RPM_BASEDIR}/rpms"]
             self.ex(*command)
 
-        for listdir, path in rpm_paths:
-            try:
-                # try to get package infos via rpm
-                pkgmatch = {
-                        'dist': listdir,
-                        'arch': 'x86_64',
-                        }
+        directories = IncomingDirectory.objects.filter(enabled=True)
 
-                command = ["rpm", "-qpi", path]
-                code, out, err = self.ex(*command)
-                lines = out.decode('utf-8').split('\n')
-                for line in lines:
-                    if line.startswith('Description'):
-                        break
-                    line_re = re.match('^(?P<key>[a-zA-Z ]*[a-zA-Z])[ ]*: (?P<value>.*)$', line)
-                    if line_re is None:
-                        print("Can't parse line: {}".format(line))
-                        continue
-                    k = line_re.group('key').lower()
-                    v = line_re.group('value')
-                    if k in ['name', 'version', 'release']:
-                        pkgmatch[k] = v
-                    if k == 'architecture':
-                        pkgmatch['arch'] = v
+        for directory in directories.order_by('location'):
+            self.handle_incoming(directory)
 
-                dist = Distribution.objects.get(name=pkgmatch['dist'])
-
-                # find package name from file name
-                package = None
-                if pkgmatch['arch'] == "src":
-                    pkgs = SourcePackage.objects.filter(package__name=pkgmatch['name'])
-                    pkgs_dist = pkgs.filter(dist=dist)
-                    if len(pkgs_dist) > 0:
-                        package = pkgs_dist[0].package
-                    elif len(pkgs) > 0:
-                        package = pkgs[0].package
-                else:
-                    pkgs = BinaryPackage.objects.filter(name=pkgmatch['name'])
-                    pkgs_dist = pkgs.filter(dist=dist)
-                    pkgs_arch = pkgs_dist.filter(arch=pkgmatch['arch'])
-                    if len(pkgs_arch) > 0:
-                        package = pkgs_arch[0].package
-                    elif len(pkgs_dist) > 0:
-                        package = pkgs_dist[0].package
-                    elif len(pkgs) > 0:
-                        package = pkgs[0].package
-
-                if package is None:
-                    package = Package.objects.get_or_create(name=pkgmatch['name'])[0]
-
-                package.last_seen = timezone.now()
-                package.save()
-
-                # remove package if requested
-                if package.name in self.prerm or package.remove_on_update:
-                    name = pkgmatch['name']
-                    storagefiles = glob.glob(f"{settings.RPM_BASEDIR}/rpms/{name}-*-*.*.*.rpm")
-                    for file in storagefiles:
-                        self.rm(file)
-                    for srcpkg in SourcePackage.objects.filter(package__name=package.name, dist__vendor__in=[VENDOR_FEDORA, VENDOR_REDHAT]):
-                        for component in srcpkg.components.all():
-                            fn = f"{settings.RPM_BASEDIR}/{component.name}/{srcpkg.name}-{srcpkg.version}.{srcpkg.dist.name}.src.rpm"
-                            if os.path.exists(fn) or os.path.islink(fn):
-                                self.rm(fn)
-                        if not self.dry:
-                            srcpkg.delete()
-                    for binpkg in BinaryPackage.objects.filter(package__name=package.name, dist__vendor__in=[VENDOR_FEDORA, VENDOR_REDHAT]):
-                        for component in binpkg.components.all():
-                            fn = f"{settings.RPM_BASEDIR}/{component.name}/{binpkg.name}-{binpkg.version}.{binpkg.dist.name}.{binpkg.arch}.rpm"
-                            if os.path.exists(fn) or os.path.islink(fn):
-                                self.rm(fn)
-                        if not self.dry:
-                            binpkg.delete()
-
-                target = self.handle_rpm_file(path, package, dist, pkgmatch)
-                if target is None:
-                    self.err("Couldn't create link target rpm file.")
-                    continue
-
-                dists = [dist]
-                if package.all_distributions:
-                    dists = Distribution.objects.filter(vendor=dist.vendor)
-
-                for d in dists:
-                    d.last_seen = timezone.now()
-                    d.save()
-                    self.handle_rpm_distribution(path, package, d, pkgmatch, target)
-
-            except RuntimeError as e:
-                self.err(e)
-
-        if len(rpm_paths) > 0:
+        if settings.RPM_BASEDIR is not None:
             # regenerate / update all components
             components_to_regenerate = []
             dists = Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT])
@@ -415,18 +457,7 @@ class Command(BaseCommand):
                 command = ["createrepo", "-d", "--basedir", f"{settings.RPM_BASEDIR}/{component.name}", "--update", "."]
                 self.ex(*command)
 
-            # fix selinux contexts
-            command = ["restorecon", "-Rv", settings.RPM_BASEDIR]
-            self.ex(*command)
-
-    def handle(self, *args, **options):
-        self.verbose = options['verbosity'] >= 2
-        self.dry = options['dry_run']
-        self.norm = options['norm']
-        self.prerm = options['prerm'].split(',')
-        self.src_handled = {}
-
-        directories = IncomingDirectory.objects.filter(enabled=True)
-
-        for directory in directories.order_by('location'):
-            self.handle_incoming(directory)
+            if settings.SELINUX:
+                # fix selinux contexts
+                command = ["restorecon", "-Rv", settings.RPM_BASEDIR]
+                self.ex(*command)
