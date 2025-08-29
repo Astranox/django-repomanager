@@ -5,6 +5,8 @@ services:
   packagearchive:
     build: .
     image: &img "packagearchive:latest"
+    environment: &env
+      - CSRF_TRUSTED_ORIGINS=https://localhost
     restart: 'no'
     volumes:
       - ./:/usr/src/app/:z
