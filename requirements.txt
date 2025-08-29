@@ -1,4 +1,4 @@
 # NOTE: setup.py contains the packages installed with setup.py install
-Django==2.2.26
+Django<4
 gnupg==2.3.1
-bjoern==3.1.0
+gunicorn>=20.1.0

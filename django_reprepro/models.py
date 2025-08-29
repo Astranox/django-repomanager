@@ -12,7 +12,7 @@
 # not, see <http://www.gnu.org/licenses/>.
 
 from django.db import models
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 
 from .constants import VENDOR_DEBIAN
 from .constants import VENDOR_UBUNTU
