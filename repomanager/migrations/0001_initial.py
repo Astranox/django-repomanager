@@ -27,7 +27,7 @@ class Migration(migrations.Migration):
                 ('name', models.CharField(max_length=16, unique=True)),
                 ('vendor', models.SmallIntegerField(choices=[(0, 'Debian'), (1, 'Ubuntu')])),
                 ('last_seen', models.DateTimeField(null=True)),
-                ('components', models.ManyToManyField(to='django_reprepro.Component')),
+                ('components', models.ManyToManyField(to='repomanager.Component')),
             ],
         ),
         migrations.CreateModel(
@@ -46,7 +46,7 @@ class Migration(migrations.Migration):
                 ('all_components', models.BooleanField(default=False)),
                 ('last_seen', models.DateTimeField(null=True)),
                 ('remove_on_update', models.BooleanField(default=False, help_text='Remove package from index prior to adding a new version of the package.')),
-                ('components', models.ManyToManyField(to='django_reprepro.Component')),
+                ('components', models.ManyToManyField(to='repomanager.Component')),
             ],
         ),
         migrations.CreateModel(
@@ -56,9 +56,9 @@ class Migration(migrations.Migration):
                 ('timestamp', models.DateTimeField(auto_now_add=True)),
                 ('version', models.CharField(max_length=32)),
                 ('arch', models.CharField(max_length=8)),
-                ('components', models.ManyToManyField(to='django_reprepro.Component')),
-                ('dist', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='django_reprepro.Distribution')),
-                ('package', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='django_reprepro.Package')),
+                ('components', models.ManyToManyField(to='repomanager.Component')),
+                ('dist', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='repomanager.Distribution')),
+                ('package', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='repomanager.Package')),
             ],
         ),
     ]

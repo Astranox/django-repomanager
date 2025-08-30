@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('django_reprepro', '0006_auto_20220119_0839'),
+        ('repomanager', '0006_auto_20220119_0839'),
     ]
 
     operations = [

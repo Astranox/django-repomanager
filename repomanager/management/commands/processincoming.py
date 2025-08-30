@@ -1,14 +1,14 @@
-# This file is part of django-reprepro (https://github.com/mathiasertl/django-reprepro).
+# This file is part of django-repomanager (https://github.com/Astranox/django-repomanager).
 #
-# django-reprepro is free software: you can redistribute it and/or modify it under the terms of the
+# django-repomanager is free software: you can redistribute it and/or modify it under the terms of the
 # GNU General Public License as published by the Free Software Foundation, either version 3 of the
 # License, or (at your option) any later version.
 #
-# django-reprepro is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+# django-repomanager is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
 # without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
 # the GNU General Public License for more details.
 #
-# You should have received a copy of the GNU General Public License along with django-reprepro.  If
+# You should have received a copy of the GNU General Public License along with django-repomanager.  If
 # not, see <http://www.gnu.org/licenses/>.
 
 import glob
@@ -28,7 +28,7 @@ from ...models import IncomingDirectory
 from ...models import Package
 from ...models import SourcePackage
 from ...util import ChangesFile
-from ...constants import VENDOR_FEDORA, VENDOR_REDHAT
+from ...constants import VENDOR_FEDORA, VENDOR_REDHAT, VENDOR_DEBIAN, VENDOR_UBUNTU
 
 # NOTE 2016-01-15: We add --ignore=surprisingbinary because of automatically generated
 #   -dbgsym packages, which are not included in the changes file. See
@@ -36,8 +36,8 @@ from ...constants import VENDOR_FEDORA, VENDOR_REDHAT
 #   in reprepro 4.17.0.
 # NOTE 2018-01-14: Add --ignore=wrongdistribution because packages now always name "unstable"
 #   in the changelog.
-BASE_ARGS = ['reprepro', '-b', settings.APT_BASEDIR, '--ignore=surprisingbinary',
-             '--ignore=wrongdistribution']
+DEB_BASE_ARGS = ['reprepro', '-b', settings.APT_BASEDIR, '--ignore=surprisingbinary',
+                 '--ignore=wrongdistribution']
 
 
 class Command(BaseCommand):
@@ -77,18 +77,18 @@ class Command(BaseCommand):
     def remove_src_package(self, pkg, dist):
         """Remove a source package from a distribution."""
 
-        cmd = BASE_ARGS + ['removesrc', dist.name, pkg]
+        cmd = DEB_BASE_ARGS + ['removesrc', dist.name, pkg]
         return self.ex(*cmd)
 
     def include(self, dist, component, changesfile):
         """Add a .changes file to the repository."""
 
-        cmd = BASE_ARGS + ['-C', component.name, 'include', dist.name, changesfile.path]
+        cmd = DEB_BASE_ARGS + ['-C', component.name, 'include', dist.name, changesfile.path]
         return self.ex(*cmd)
 
     def includedeb(self, dist, component, changes, deb):
         path = os.path.join(os.path.dirname(changes.path), deb)
-        cmd = BASE_ARGS + ['-C', component.name, 'includedeb', dist.name, path]
+        cmd = DEB_BASE_ARGS + ['-C', component.name, 'includedeb', dist.name, path]
         return self.ex(*cmd)
 
     def record_source_upload(self, package, changes, dist, components):
@@ -202,7 +202,7 @@ class Command(BaseCommand):
             if os.path.isfile(subdirpath) and subdirpath.endswith(".rpm"):
                 rpm_file_paths.append(subdirpath)
 
-        for listdir__this_is_first_param_now, filepath in rpm_paths:
+        for filepath in rpm_file_paths:
             try:
                 # try to get package infos via rpm
                 pkgmatch = {
@@ -413,10 +413,10 @@ class Command(BaseCommand):
             if '-' in dirname:
                 dist, _, _ = dirname.rpartition('-')
 
-            // check if it is a valid distribution
+            # check if it is a valid distribution
             if os.path.isdir(path) and dist in dist_names:
                 vendor = dist_names[dist].vendor
-                if vendor in [VENDOR_DEBIAN,VENDOR_UBUNTU]:
+                if vendor in [VENDOR_DEBIAN, VENDOR_UBUNTU]:
                     self.handle_deb_directory(path, dirname)
                 elif vendor in [VENDOR_FEDORA,VENDOR_REDHAT]:
                     self.handle_rpm_directory(path, dist)
@@ -430,10 +430,9 @@ class Command(BaseCommand):
         self.prerm = options['prerm'].split(',')
         self.src_handled = {}
 
-        # ensure paths
+        # ensure rpm directories exist
         if settings.RPM_BASEDIR is not None:
-            dists = Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT])
-            for dist in dists:
+            for dist in Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT]):
                 for component in dist.components.all():
                     command = ["mkdir", "-p", f"{settings.RPM_BASEDIR}/{component.name}"]
                     self.ex(*command)
@@ -448,8 +447,7 @@ class Command(BaseCommand):
         if settings.RPM_BASEDIR is not None:
             # regenerate / update all components
             components_to_regenerate = []
-            dists = Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT])
-            for dist in dists:
+            for dist in Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT]):
                 for component in dist.components.all():
                     if component not in components_to_regenerate:
                         components_to_regenerate.append(component)
@@ -460,4 +458,10 @@ class Command(BaseCommand):
             if settings.SELINUX:
                 # fix selinux contexts
                 command = ["restorecon", "-Rv", settings.RPM_BASEDIR]
+                self.ex(*command)
+
+        if settings.DEB_BASEDIR is not None:
+            if settings.SELINUX:
+                # fix selinux contexts
+                command = ["restorecon", "-Rv", settings.DEB_BASEDIR]
                 self.ex(*command)

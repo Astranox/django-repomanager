@@ -1,12 +1,18 @@
-# django-reprepro
+# django-repomanager (forked from mathiasertl/django-reprepro)
 
 ## Requirements
 
-* Tested with Python 3.5 or 3.7 (Python3 shipping with Debian Stretch and Buster)
-* [Django](https://www.djangoproject.com/) 2.0 or Django 2.1
-* [reprepro](https://wiki.debian.org/DebianRepository/SetupWithReprepro) 5.1 or 5.2
+* Tested with Python 3.11
+* [Django](https://www.djangoproject.com/) 5.0
+* [reprepro](https://wiki.debian.org/DebianRepository/SetupWithReprepro) 5.2
+* [createrepo_c](https://rpm-software-management.github.io/createrepo_c/) 1.2.1
 
 ## ChangeLog
+
+### 0.2.1
+
+** forked to django-repomanager
+** updated Django, Python3, ..
 
 ### 0.2.0
 

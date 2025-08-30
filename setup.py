@@ -22,7 +22,7 @@ class QualityCommand(Command):
         pass
 
     def run(self):
-        checked = ['packagearchive', 'django_reprepro', 'setup.py', ]
+        checked = ['packagearchive', 'repomanager', 'setup.py', ]
         print('isort --check-only --diff -rc %s' % ' '.join(checked))
         status = subprocess.call(['isort', '--check-only', '--diff', '-rc', ] + checked)
         if status != 0:
@@ -40,17 +40,17 @@ class QualityCommand(Command):
 
 
 setup(
-    name='django-reprepro',
-    version='0.2.0',
+    name='django-repomanager',
+    version='0.2.1',
     description='',
     author='Mathias Ertl',
     author_email='mati@er.tl',
-    url='https://github.com/mathiasertl/django-reprepro',
+    url='https://github.com/Astranox/django-repomanager',
     packages=[
-        'django_reprepro',
-        'django_reprepro.management',
-        'django_reprepro.management.commands',
-        'django_reprepro.migrations',
+        'repomanager',
+        'repomanager.management',
+        'repomanager.management.commands',
+        'repomanager.migrations',
     ],
     cmdclass={
         'code_quality': QualityCommand,

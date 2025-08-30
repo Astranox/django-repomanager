@@ -5,7 +5,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('django_reprepro', '0001_initial'),
+        ('repomanager', '0001_initial'),
     ]
 
     operations = [
@@ -22,7 +22,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='distribution',
             name='components',
-            field=models.ManyToManyField(blank=True, to='django_reprepro.Component'),
+            field=models.ManyToManyField(blank=True, to='repomanager.Component'),
         ),
         migrations.AlterField(
             model_name='package',
@@ -32,7 +32,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='package',
             name='components',
-            field=models.ManyToManyField(blank=True, to='django_reprepro.Component'),
+            field=models.ManyToManyField(blank=True, to='repomanager.Component'),
         ),
         migrations.AlterField(
             model_name='package',
