@@ -129,8 +129,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 MEDIA_ROOT = os.environ.get("MEDIA_ROOT", default='/var/www/html/media/')
 MEDIA_URL = '/media/'
 
-APT_BASEDIR = '/srv/repo/www/apt'
-RPM_BASEDIR = '/srv/repo/www/rpm'
+APT_BASEDIR = os.environ.get("APT_BASEDIR", default=None)
+RPM_BASEDIR = os.environ.get("RPM_BASEDIR", default=None)
 
 SELINUX = False
 

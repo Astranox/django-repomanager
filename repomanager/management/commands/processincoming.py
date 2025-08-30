@@ -36,7 +36,7 @@ from ...constants import VENDOR_FEDORA, VENDOR_REDHAT, VENDOR_DEBIAN, VENDOR_UBU
 #   in reprepro 4.17.0.
 # NOTE 2018-01-14: Add --ignore=wrongdistribution because packages now always name "unstable"
 #   in the changelog.
-DEB_BASE_ARGS = ['reprepro', '-b', settings.APT_BASEDIR, '--ignore=surprisingbinary',
+DEB_BASE_ARGS = ['reprepro', '-b', settings.DEB_BASEDIR, '--ignore=surprisingbinary',
                  '--ignore=wrongdistribution']
 
 
