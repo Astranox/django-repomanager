@@ -444,17 +444,18 @@ class Command(BaseCommand):
         self.prerm = options['prerm'].split(',')
         self.src_handled = {}
 
-        # ensure deb directories exist
-        command = ["mkdir", "-p", f"{settings.DEB_BASEDIR}", f"{settings.DEB_BASEDIR}/conf"]
-        self.ex(*command)
+        if settings.DEB_BASEDIR is not None:
+            # ensure deb directories exist
+            command = ["mkdir", "-p", f"{settings.DEB_BASEDIR}", f"{settings.DEB_BASEDIR}/conf"]
+            self.ex(*command)
 
-        with open(f"{settings.DEB_BASEDIR}/conf/distributions", 'w+') as d:
-            for distribution in Distribution.objects.filter(vendor__in=[VENDOR_DEBIAN,VENDOR_UBUNTU]):
-                component_list = []
-                for component in distribution.components.all():
-                    component_list.append(component.name)
-                comps = " ".join(component_list)
-                d.write(f"""Origin: ionic
+            with open(f"{settings.DEB_BASEDIR}/conf/distributions", 'w+') as d:
+                for distribution in Distribution.objects.filter(vendor__in=[VENDOR_DEBIAN,VENDOR_UBUNTU]):
+                    component_list = []
+                    for component in distribution.components.all():
+                        component_list.append(component.name)
+                    comps = " ".join(component_list)
+                    d.write(f"""Origin: ionic
 Label: ionic repositories
 Codename: {distribution.name}
 Version: 3.0
@@ -466,8 +467,8 @@ SignWith: yes
 
 """)
 
-        # ensure rpm directories exist
         if settings.RPM_BASEDIR is not None:
+            # ensure rpm directories exist
             for dist in Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT]):
                 for component in dist.components.all():
                     command = ["mkdir", "-p", f"{settings.RPM_BASEDIR}/{component.name}"]
