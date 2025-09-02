@@ -131,6 +131,7 @@ MEDIA_URL = '/media/'
 
 APT_BASEDIR = os.environ.get("APT_BASEDIR", default=None)
 RPM_BASEDIR = os.environ.get("RPM_BASEDIR", default=None)
+RPM_CACHEDIR = os.environ.get("RPM_CACHEDIR", default="/tmp/cache/createrepo")
 
 SELINUX = False
 

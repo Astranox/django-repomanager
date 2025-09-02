@@ -14,7 +14,6 @@
 import glob
 import os
 import re
-import time
 from subprocess import PIPE
 from subprocess import Popen
 
@@ -22,12 +21,13 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from debian import deb822, debfile
+
 from ...models import BinaryPackage
 from ...models import Distribution
 from ...models import IncomingDirectory
 from ...models import Package
 from ...models import SourcePackage
-from ...util import ChangesFile
 from ...constants import VENDOR_FEDORA, VENDOR_REDHAT, VENDOR_DEBIAN, VENDOR_UBUNTU
 
 # NOTE 2016-01-15: We add --ignore=surprisingbinary because of automatically generated
@@ -62,6 +62,8 @@ class Command(BaseCommand):
         """Remove a file. Honours --dry, --norm and --verbose."""
         if self.norm:
             return
+        if self.verbose:
+            print(f"rm {path}")
         if not self.dry:
             os.remove(path)
 
@@ -86,9 +88,8 @@ class Command(BaseCommand):
         cmd = DEB_BASE_ARGS + ['-C', component.name, 'include', dist.name, changesfile.path]
         return self.ex(*cmd)
 
-    def includedeb(self, dist, component, changes, deb):
-        path = os.path.join(os.path.dirname(changes.path), deb)
-        cmd = DEB_BASE_ARGS + ['-C', component.name, 'includedeb', dist.name, path]
+    def includedeb(self, dist, component, debpath):
+        cmd = DEB_BASE_ARGS + ['-C', component.name, 'includedeb', dist.name, debpath]
         return self.ex(*cmd)
 
     def record_source_upload(self, package, changes, dist, components):
@@ -126,8 +127,8 @@ class Command(BaseCommand):
         return pkg
 
     def handle_changesfile(self, changesfile, dist, arch):
-        pkg = ChangesFile(changesfile)
-        pkg.parse()
+        with open(changesfile) as f:
+            pkg = deb822.Changes(f)
 
         srcpkg = pkg['Source']
         package = Package.objects.get_or_create(name=srcpkg)[0]
@@ -145,14 +146,9 @@ class Command(BaseCommand):
 
         # see if all files exist. If not, try a few more times, we might be in
         # the middle of uploading a new package.
-        for i in range(1, 5):
-            if pkg.exists():
-                break
-            else:
-                if self.verbose:
-                    self.err('%s: Not all files exist, try again in 5s...'
-                             % changesfile)
-                time.sleep(5)
+        for file in pkg['Files']:
+            if not os.path.exists(os.path.join(os.path.dirname(changesfile), file['name'])):
+                self.err('%s: Not all files exist (missing %s)' % (changesfile, file['name']))
 
         # remove package if requested
         if srcpkg in self.prerm or package.remove_on_update:
@@ -176,7 +172,8 @@ class Command(BaseCommand):
             else:
                 debs = [f for f in pkg.binary_packages if f.endswith('_%s.deb' % arch)]
                 for deb in debs:
-                    code, stdout, stderr = self.includedeb(dist, component, pkg, deb)
+                    debpath = os.path.join(os.path.dirname(pkg.path), deb)
+                    code, stdout, stderr = self.includedeb(dist, component, debpath)
                     totalcode += code
 
                     if code == 0:
@@ -189,8 +186,8 @@ class Command(BaseCommand):
         if totalcode == 0:
             # remove changes files and the files referenced:
             basedir = os.path.dirname(changesfile)
-            for filename in pkg.files:
-                self.rm(os.path.join(basedir, filename))
+            for file in pkg['Files']:
+                self.rm(os.path.join(basedir, file['name']))
 
             self.rm(changesfile)
 
@@ -367,7 +364,7 @@ class Command(BaseCommand):
         seen_packages = []
 
         for f in [f for f in os.listdir(path) if f.endswith('.changes')]:
-            pkgname, _, _ = f.rpartition('_', 1)
+            pkgname, _, _ = f.rpartition('_')
             seen_packages.append(pkgname)
             dist.last_seen = timezone.now()
             try:
@@ -376,15 +373,32 @@ class Command(BaseCommand):
                 self.err(e)
 
         # check for leftover deb files without metadata files
-        for f in [f for f in os.listdir(path) if f.endswith('.deb')]:
-            pkgname, _, _ = f.rpartition('_', 1)
+        for filename in [f for f in os.listdir(path) if f.endswith('.deb')]:
+            filepath = os.path.join(path, filename)
+            pkgname, _, _ = filename.rpartition('_')
             # this file has a changes file
             if pkgname in seen_packages:
                 continue
 
             dist.last_seen = timezone.now()
             try:
-                self.handle_debfile(os.path.join(path, f), dist, arch)
+                df = debfile.DebFile(filepath)
+                ctrl = df.debcontrol()
+                package = Package.objects.get_or_create(name=ctrl['Package'])[0]
+                package.last_seen = timezone.now()
+                package.save()
+
+                # get list of components
+                if package.all_components:
+                    components = dist.components.filter(enabled=True)
+                else:
+                    components = package.components.order_by('name').filter(distribution=dist)
+                    components.update(last_seen=timezone.now())
+
+                for component in components:
+                    self.includedeb(dist, component, filepath)
+
+                self.record_binary_upload(filename, package, dist, components)
             except RuntimeError as e:
                 self.err(e)
 
@@ -430,6 +444,28 @@ class Command(BaseCommand):
         self.prerm = options['prerm'].split(',')
         self.src_handled = {}
 
+        # ensure deb directories exist
+        command = ["mkdir", "-p", f"{settings.DEB_BASEDIR}", f"{settings.DEB_BASEDIR}/conf"]
+        self.ex(*command)
+
+        with open(f"{settings.DEB_BASEDIR}/conf/distributions", 'w+') as d:
+            for distribution in Distribution.objects.filter(vendor__in=[VENDOR_DEBIAN,VENDOR_UBUNTU]):
+                component_list = []
+                for component in distribution.components.all():
+                    component_list.append(component.name)
+                comps = " ".join(component_list)
+                d.write(f"""Origin: ionic
+Label: ionic repositories
+Codename: {distribution.name}
+Version: 3.0
+Architectures: amd64 source
+Components: {comps}
+UDebComponents: {comps}
+Description: ionic custom packages
+SignWith: yes
+
+""")
+
         # ensure rpm directories exist
         if settings.RPM_BASEDIR is not None:
             for dist in Distribution.objects.filter(vendor__in=[VENDOR_FEDORA,VENDOR_REDHAT]):
@@ -451,8 +487,11 @@ class Command(BaseCommand):
                 for component in dist.components.all():
                     if component not in components_to_regenerate:
                         components_to_regenerate.append(component)
+
+            command = ["mkdir", "-p", f"{settings.RPM_CACHEDIR}"]
+            self.ex(*command)
             for component in components_to_regenerate:
-                command = ["createrepo", "-d", "--basedir", f"{settings.RPM_BASEDIR}/{component.name}", "--update", "."]
+                command = ["createrepo_c", "-d", "--basedir", f"{settings.RPM_BASEDIR}/{component.name}", "--update", "--cachedir", f"{settings.RPM_CACHEDIR}", "."]
                 self.ex(*command)
 
             if settings.SELINUX:

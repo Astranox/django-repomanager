@@ -4,6 +4,8 @@
 
 * Tested with Python 3.11
 * [Django](https://www.djangoproject.com/) 5.0
+* [python-debian](https://salsa.debian.org/python-debian-team/python-debian)
+* [rpmfile](https://github.com/srossross/rpmfile)
 * [reprepro](https://wiki.debian.org/DebianRepository/SetupWithReprepro) 5.2
 * [createrepo_c](https://rpm-software-management.github.io/createrepo_c/) 1.2.1
 

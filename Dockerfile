@@ -9,7 +9,7 @@ WORKDIR /usr/src/app
 # feedback:
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get -y upgrade && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get -y upgrade && apt-get install createrepo-c reprepro && rm -rf /var/lib/apt/lists/*
 
 # install dependencies
 COPY ./requirements.txt .
